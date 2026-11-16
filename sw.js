@@ -1,6 +1,6 @@
 // Service worker: lets the app be installed on a phone's home screen,
 // opens offline with the last version, and shows reminder notifications.
-const CACHE = 'steady-v2';
+const CACHE = 'steady-v3';
 const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'icons.js', 'budget.js', 'store.js', 'config.js',
   'manifest.webmanifest', 'icons/icon.svg', 'icons/icon-192.png', 'vendor/supabase.js', 'vendor/591.supabase.js'];
 
