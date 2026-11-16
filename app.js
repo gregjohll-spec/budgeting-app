@@ -196,7 +196,6 @@ function renderHome() {
       ${tile('setaside', 'jar', 'Set aside', `${money(tot.set)} of ${money(tot.needed)}`)}
       ${tile('available', 'coins', 'Available', `${money(lk.any)} to spend`)}
       ${tile('upcoming', 'calendar', 'Coming up', nextBill ? `${esc(nextBill.name)} · ${B.daysUntilDue(nextBill, t) <= 6 ? weekday(B.parseDate(nextBill.due_date)) : nice(B.parseDate(nextBill.due_date))}` : 'Nothing due soon')}
-      ${tile('reminders', 'bell', 'Reminders', remindSummary())}
       ${tile('household', 'people', 'Household', esc(names || data.me))}
     </div>`;
 }
@@ -314,78 +313,6 @@ function renderUpcoming() {
     <div class="list">${all.map(x => `<${x.id ? `button data-nav="priority" data-id="${x.id}"` : 'div'} class="item"><span class="when">${when(x.date)}</span>${x.html}</${x.id ? 'button' : 'div'}>`).join('') || '<p class="muted">Nothing due in the next two weeks.</p>'}</div>`;
 }
 
-// ---------- reminders ----------
-const pushOk = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
-const installed = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
-const isIOS = () => /iPhone|iPad|iPod/.test(navigator.userAgent);
-let remindState = null; // { on, days } for this phone, once known
-function remindSummary() {
-  if (store.mode === 'demo') return 'Before bills are due';
-  if (!remindState) return 'Before bills are due';
-  return remindState.on ? `On · ${remindState.days} day${remindState.days > 1 ? 's' : ''} before` : 'Off';
-}
-async function readRemindState() {
-  if (store.mode === 'demo' || !pushOk()) return (remindState = { on: false, days: 3 });
-  const reg = await navigator.serviceWorker.ready;
-  const sub = await reg.pushManager.getSubscription();
-  const row = sub ? await store.reminderFor(sub.endpoint).catch(() => null) : null;
-  return (remindState = { on: Boolean(sub && row), days: row?.days_before || 3 });
-}
-function renderReminders() {
-  return `${backBar()}
-    <div class="hero">
-      <div class="hero-badge">${icon('bell')}</div>
-      <h1>Reminders</h1>
-      <p class="muted">A gentle note on this phone when a bill is due soon and still needs money.</p>
-    </div>
-    <div id="rem-body" class="stack"><p class="muted center-text">Checking…</p></div>`;
-}
-async function fillReminders() {
-  const el = $('rem-body');
-  if (!el) return;
-  if (store.mode === 'demo') { el.innerHTML = '<div class="card soft"><p>Reminders work once your household is signed in. This is only example data.</p></div>'; return; }
-  if (isIOS() && !installed()) {
-    el.innerHTML = `<div class="card soft"><p><strong>First, add Steady to your Home Screen.</strong></p><p>iPhones only allow reminders from apps on the Home Screen. In Safari, tap the Share button, then <strong>Add to Home Screen</strong>. Open Steady from there and come back here.</p></div>`;
-    return;
-  }
-  if (!pushOk()) { el.innerHTML = '<div class="card soft"><p>This browser can\'t show reminders. Try Chrome, Edge, or Safari on a phone.</p></div>'; return; }
-  if (Notification.permission === 'denied') { el.innerHTML = '<div class="card soft"><p>Notifications are turned off for Steady in this phone\'s settings. Turn them on there, then come back.</p></div>'; return; }
-  const st = await readRemindState();
-  const opts = [1, 3, 5].map(n => `<button class="seg ${st.days === n ? 'on' : ''}" data-days="${n}" aria-pressed="${st.days === n}">${n} day${n > 1 ? 's' : ''}</button>`).join('');
-  el.innerHTML = `
-    <div class="card"><p class="small muted">Remind me this many days before a due date:</p><div class="segs">${opts}</div>
-      <p class="small muted">You'll also get one the day before, only if the bill still needs money.</p></div>
-    ${st.on ? '<p class="center-text"><strong>Reminders are on for this phone.</strong></p><button id="rem-off">Turn off reminders</button>' : '<button class="primary" id="rem-on">Turn on reminders</button>'}`;
-  document.querySelectorAll('[data-days]').forEach(b => b.onclick = () => act(async () => {
-    remindState.days = Number(b.dataset.days);
-    if (remindState.on) { const sub = await (await navigator.serviceWorker.ready).pushManager.getSubscription(); await store.saveReminder(sub, remindState.days); toast('Saved.'); }
-    fillReminders();
-  }));
-  if ($('rem-on')) $('rem-on').onclick = () => act(async () => {
-    $('rem-on').disabled = true;
-    const perm = await Notification.requestPermission();
-    if (perm !== 'granted') { toast('No problem. You can turn reminders on any time.'); return fillReminders(); }
-    const key = await store.vapidKey();
-    const reg = await navigator.serviceWorker.ready;
-    const sub = await reg.pushManager.getSubscription() || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlKey(key) });
-    await store.saveReminder(sub, remindState.days);
-    await store.log('turned on reminders');
-    toast('✓ Reminders are on.', null, true);
-    fillReminders();
-  });
-  if ($('rem-off')) $('rem-off').onclick = () => act(async () => {
-    const sub = await (await navigator.serviceWorker.ready).pushManager.getSubscription();
-    if (sub) { await store.removeReminder(sub.endpoint); await sub.unsubscribe(); }
-    toast('Reminders are off for this phone.');
-    fillReminders();
-  });
-}
-function urlKey(b64) {
-  const pad = '='.repeat((4 - (b64.length % 4)) % 4);
-  const raw = atob((b64 + pad).replace(/-/g, '+').replace(/_/g, '/'));
-  return Uint8Array.from(raw, c => c.charCodeAt(0));
-}
-
 // ---------- household ----------
 function renderHousehold() {
   return `${backBar()}
@@ -476,7 +403,7 @@ function renderConfirmBox() {
 }
 
 // ---------- render + wiring ----------
-const VIEWS = { home: renderHome, priorities: renderPriorities, priority: renderPriority, income: renderIncome, setaside: renderSetAside, available: renderAvailable, household: renderHousehold, upcoming: renderUpcoming, reminders: renderReminders, add: renderAdd };
+const VIEWS = { home: renderHome, priorities: renderPriorities, priority: renderPriority, income: renderIncome, setaside: renderSetAside, available: renderAvailable, household: renderHousehold, upcoming: renderUpcoming, add: renderAdd };
 function render() {
   $('nav').hidden = false;
   $('app').innerHTML = ui.confirm ? renderConfirmBox() : ui.edit ? renderEdit() : (VIEWS[ui.view] || renderHome)();
@@ -491,7 +418,6 @@ function go(view, id = null) {
 }
 
 function wire() {
-  if (ui.view === 'reminders' && !ui.edit && !ui.confirm) fillReminders().catch(e => toast(friendlyError(e)));
   document.querySelectorAll('[data-nav]').forEach(b => b.onclick = () => go(b.dataset.nav, b.dataset.id || null));
 
   // Add money: pick a source
@@ -641,7 +567,6 @@ async function route() {
     const hid = await store.findHousehold();
     if (!hid) return renderSetup();
     await refresh();
-    if (store.mode === 'live') readRemindState().then(() => { if (ui.view === 'home' && !ui.edit && !ui.draft) render(); }).catch(() => {});
   } catch (e) {
     console.error(e);
     $('app').innerHTML = `<div class="card"><h1>Couldn't load your budget</h1><p>${esc(friendlyError(e))}</p><button class="primary" id="retry">Try again</button></div>`;
