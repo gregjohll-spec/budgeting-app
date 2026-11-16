@@ -128,6 +128,32 @@ export class SupabaseStore {
     const { error } = await this.sb.rpc('start_new_month', { h: this.householdId });
     if (error) throw error;
   }
+  // Reminders (see supabase/reminders.sql and supabase/functions/send-reminders)
+  async vapidKey() {
+    const { data, error } = await this.sb.rpc('vapid_public_key');
+    if (error) throw error;
+    if (data) return data;
+    const r = await this.sb.functions.invoke('send-reminders', { body: { setup: true } });
+    if (r.error) throw r.error;
+    return r.data.publicKey;
+  }
+  async reminderFor(endpoint) {
+    const { data, error } = await this.sb.from('push_subscriptions').select('days_before').eq('endpoint', endpoint).maybeSingle();
+    if (error) throw error;
+    return data;
+  }
+  async saveReminder(sub, days) {
+    const j = sub.toJSON();
+    const { error } = await this.sb.from('push_subscriptions').upsert({
+      household_id: this.householdId, user_id: this.user.id, endpoint: j.endpoint,
+      p256dh: j.keys.p256dh, auth: j.keys.auth, days_before: days,
+    }, { onConflict: 'endpoint' });
+    if (error) throw error;
+  }
+  async removeReminder(endpoint) {
+    const { error } = await this.sb.from('push_subscriptions').delete().eq('endpoint', endpoint);
+    if (error) throw error;
+  }
   async renameMe(name) {
     await this.sb.from('members').update({ display_name: name }).eq('user_id', this.user.id).eq('household_id', this.householdId);
     this.me = name;

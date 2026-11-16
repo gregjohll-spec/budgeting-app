@@ -2,11 +2,12 @@
 import * as B from './budget.js';
 import { SupabaseStore, DemoStore } from './store.js';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './config.js';
+import { icon, ring, priorityIcon, incomeIcon } from './icons.js';
 
 const live = Boolean(SUPABASE_URL && SUPABASE_ANON_KEY && window.supabase);
 const store = live ? new SupabaseStore(SUPABASE_URL, SUPABASE_ANON_KEY) : new DemoStore();
 
-const ui = { tab: 'home', draft: null, edit: null, confirm: null, signIn: { step: 'email', email: '' } };
+const ui = { view: 'home', id: null, draft: null, edit: null, confirm: null, signIn: { step: 'email', email: '' } };
 let data = null;
 
 // ---------- small helpers ----------
@@ -147,202 +148,379 @@ function renderSetup() {
   $('signout').onclick = async () => { await store.signOut(); route(); };
 }
 
-// ---------- main screens ----------
-function priorityCard(p) {
-  const st = B.statusOf(p, data.deposits, today());
-  const a = B.assignedTo(p, data.deposits), r = B.remainingFor(p, data.deposits);
-  const pct = Math.min(100, Math.round((a / p.needed) * 100));
-  const label = { paid: 'Paid', ready: '✓ Ready', 'heads-up': 'Needs a little more', 'on-track': 'On track' }[st];
-  const chip = { paid: 'paid', ready: 'ready', 'heads-up': 'heads', 'on-track': 'track' }[st];
-  const plan = B.setAsidePlan(p, ctx(), today());
-  let line;
-  if (p.paid) line = 'Marked as paid. Nice.';
-  else if (r <= 0) line = 'All set aside.';
-  else if (plan && plan.count) line = `${money(r)} to go. Set aside about ${money(plan.each)} from each of your next ${plan.count === 1 ? 'paycheck' : plan.count + ' paychecks'}.`;
-  else line = `${money(r)} to go.`;
-  return `<div class="row ${chip}">
-    <div class="row-head"><strong>${esc(p.name)}</strong><span class="chip ${chip}">${label}</span></div>
-    <div class="bar" role="img" aria-label="${pct}% set aside"><span style="width:${pct}%"></span></div>
-    <div class="meta"><span class="num">${money(a)} of ${money(p.needed)}</span><span>${dueText(p)}</span></div>
-    <p class="small">${line}</p>
-  </div>`;
-}
+// ---------- shared pieces ----------
+const pctOf = p => (p.paid ? 100 : Math.min(100, (B.assignedTo(p, data.deposits) / p.needed) * 100));
+const isDone = p => p.paid || B.remainingFor(p, data.deposits) <= 0;
+const backBar = (to = 'home', label = 'Home') => `<button class="back" data-nav="${to}">${icon('back')}${label}</button>`;
+const shortDue = p => {
+  const n = B.daysUntilDue(p, today());
+  if (n === null) return 'All month';
+  if (n < 0) return 'Past due';
+  if (n === 0) return 'Due today';
+  if (n === 1) return 'Due tomorrow';
+  return `Due ${nice(B.parseDate(p.due_date))}`;
+};
+const totals = () => {
+  const pr = data.priorities.filter(p => !p.paid);
+  const needed = pr.reduce((a, p) => a + Number(p.needed), 0);
+  const set = pr.reduce((a, p) => a + Math.min(Number(p.needed), B.assignedTo(p, data.deposits)), 0);
+  return { needed, set };
+};
 
+// ---------- home: one button and five tiles ----------
 function renderHome() {
   const t = today(), pr = sorted();
-  const next = B.nextUp(ctx(), t);
-  const needs = pr.filter(p => B.statusOf(p, data.deposits, t) === 'heads-up' && p !== next).slice(0, 2);
-  const ready = pr.filter(p => ['ready', 'paid'].includes(B.statusOf(p, data.deposits, t))).length;
-  let nextHtml;
-  if (!pr.length) nextHtml = `<div class="card next"><p class="big">Let's set up your priorities.</p><p>Start with the bills that matter most, like rent and food. Then add where your money comes from.</p><div class="btns"><button class="primary" data-go="plan">Set up my plan</button></div></div>`;
-  else if (next) {
-    const pays = B.upcomingPaydays(data.sources, t, B.planHorizon(next, t)).slice(0, 3).map(x => `${esc(x.source.person)} (${weekday(x.date)})`).join(', ');
-    nextHtml = `<div class="card next"><p class="small muted">What needs money next</p>
-      <p class="big">${esc(next.name)}: ${money(B.remainingFor(next, data.deposits))} to go</p>
-      <p>${dueText(next)}.${pays ? ` Paychecks coming before then: ${pays}.` : ''}</p>
-      <div class="btns"><button class="primary" data-go="add">Add money</button></div></div>`;
-  } else nextHtml = `<div class="card next"><p class="big">Everything is set aside.</p><p>Every priority has the money it needs this month. That's a big deal.</p></div>`;
-  const heads = needs.map(p => `<div class="card headsup"><p><strong>Heads up:</strong> ${esc(p.name)} is ${lowerFirst(dueText(p))} and still needs ${money(B.remainingFor(p, data.deposits))}. You can move money from another priority or wait for the next paycheck.</p></div>`).join('');
-  const lk = B.leftByKind(data.deposits, data.sources);
   const names = data.members.map(m => m.display_name).join(' & ');
+  const demo = store.mode === 'demo' ? '<p class="example">Example data, saved only on this device.</p>' : '';
+  if (!pr.length || !data.sources.length) return `
+    <h1>Hi ${esc(data.me)}</h1>${demo}
+    <div class="card setup"><h2>Let's get you set up</h2><p class="muted">Three short steps.</p>
+      <ol class="steps">
+        <li class="${pr.length ? 'done' : ''}"><button data-nav="priority-new">${icon(pr.length ? 'check' : 'list')}<span>Add your bills and needs</span></button></li>
+        <li class="${data.sources.length ? 'done' : ''}"><button data-nav="income-new">${icon(data.sources.length ? 'check' : 'wallet')}<span>Add your income</span></button></li>
+        <li><button data-nav="add" ${pr.length && data.sources.length ? '' : 'disabled'}>${icon('plus')}<span>Add your first money</span></button></li>
+      </ol></div>`;
+  const ready = pr.filter(isDone).length;
+  const soon = pr.some(p => B.statusOf(p, data.deposits, t) === 'heads-up');
+  const nextPay = data.sources.map(s => ({ s, d: B.nextPayDate(s, t) })).filter(x => !x.s.limit_kind).sort((a, b) => a.d - b.d)[0];
+  const tot = totals(), lk = B.leftByKind(data.deposits, data.sources);
+  const nextBill = pr.filter(p => !p.paid && p.due_date && B.daysUntilDue(p, t) >= 0).sort((a, b) => B.daysUntilDue(a, t) - B.daysUntilDue(b, t))[0];
+  const tile = (nav, ic, title, sum, extra = '') => `<button class="tile" data-nav="${nav}">${extra}<span class="tile-ico">${icon(ic)}</span><span class="tile-title">${title}</span><span class="tile-sum">${sum}</span></button>`;
   return `
-    <div class="top"><div><h1>Hi ${esc(names || data.me)}</h1><p class="muted small">${t.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}${pr.length ? ` · ${ready} of ${pr.length} priorities ready` : ''}</p></div></div>
-    ${store.mode === 'demo' ? '<p class="example">This is example data saved only on this device. Once your household is connected, you\'ll both see the same real numbers.</p>' : ''}
-    ${nextHtml}${heads}
-    ${pr.length ? `<h2>Your priorities</h2><div class="list">${pr.map(priorityCard).join('')}</div>
-    <div class="card"><div class="row-head"><strong>Left over to spend</strong><span class="num">${money(lk.any)}</span></div><p class="small muted">Money from paychecks that isn't set aside for a priority.</p>${lk.food > 0 ? `<p class="small">Plus ${money(lk.food)} of FoodShare for food only.</p>` : ''}${lk.housing > 0 ? `<p class="small">Plus ${money(lk.housing)} of housing assistance for housing only.</p>` : ''}</div>` : ''}
-    ${data.activity.length ? `<div class="card"><h2>Recent changes</h2><ul class="log">${data.activity.slice(0, 6).map(l => `<li><strong>${esc(l.who)}</strong> ${esc(l.what)} <span class="muted">· ${ago(l.created_at)}</span></li>`).join('')}</ul></div>` : ''}`;
+    <header class="hello"><h1>Hi ${esc(names || data.me)}</h1><p class="muted">${t.toLocaleDateString('en-US', { month: 'long' })}</p></header>
+    ${demo}
+    <button class="big-add" data-nav="add">${icon('plus')}Add money</button>
+    <div class="tiles">
+      ${tile('priorities', 'list', 'Priorities', `${ready} of ${pr.length} ready`, soon ? '<span class="dot" aria-label="Something is due soon"></span>' : '')}
+      ${tile('income', 'wallet', 'Income', nextPay ? `Next: ${esc(nextPay.s.person)}, ${weekday(nextPay.d)}` : `${data.sources.length} sources`)}
+      ${tile('setaside', 'jar', 'Set aside', `${money(tot.set)} of ${money(tot.needed)}`)}
+      ${tile('available', 'coins', 'Available', `${money(lk.any)} to spend`)}
+      ${tile('upcoming', 'calendar', 'Coming up', nextBill ? `${esc(nextBill.name)} · ${B.daysUntilDue(nextBill, t) <= 6 ? weekday(B.parseDate(nextBill.due_date)) : nice(B.parseDate(nextBill.due_date))}` : 'Nothing due soon')}
+      ${tile('reminders', 'bell', 'Reminders', remindSummary())}
+      ${tile('household', 'people', 'Household', esc(names || data.me))}
+    </div>`;
 }
 
+// ---------- priorities ----------
+function renderPriorities() {
+  const pr = sorted();
+  return `${backBar()}
+    <div class="title-row"><h1>Priorities</h1><button class="primary small-btn" data-nav="priority-new">Add</button></div>
+    <p class="muted small">Most important first.</p>
+    <div class="list">${pr.map(p => {
+      const st = B.statusOf(p, data.deposits, today());
+      const right = p.paid ? 'Paid' : isDone(p) ? 'Ready' : `${money(B.remainingFor(p, data.deposits))} to go`;
+      return `<button class="item ${st}" data-nav="priority" data-id="${p.id}">
+        <span class="item-ico">${icon(priorityIcon(p))}</span>
+        <span class="item-main"><span class="item-name">${esc(p.name)}</span><span class="item-sub ${st === 'heads-up' ? 'warn' : ''}">${shortDue(p)}</span></span>
+        <span class="item-right">${ring(pctOf(p), 40, isDone(p))}<span class="small">${right}</span></span>
+      </button>`;
+    }).join('') || '<p>No priorities yet.</p>'}</div>`;
+}
+
+function renderPriority() {
+  const p = data.priorities.find(x => x.id === ui.id);
+  if (!p) { ui.view = 'priorities'; return renderPriorities(); }
+  const a = B.assignedTo(p, data.deposits), r = B.remainingFor(p, data.deposits);
+  const plan = B.setAsidePlan(p, ctx(), today());
+  const pr = sorted(), i = pr.findIndex(x => x.id === p.id);
+  let msg;
+  if (p.paid) msg = 'Paid. One less thing to think about.';
+  else if (r <= 0) msg = 'All set aside. Nice work.';
+  else if (plan?.count) msg = `Set aside about <strong>${money(plan.each)}</strong> from each of your next ${plan.count === 1 ? 'paycheck' : plan.count + ' paychecks'}.`;
+  else msg = `Still needs ${money(r)}.`;
+  return `${backBar('priorities', 'Priorities')}
+    <div class="hero">
+      <div class="hero-ring">${ring(pctOf(p), 120, isDone(p))}<span class="hero-ico">${icon(priorityIcon(p))}</span></div>
+      <h1>${esc(p.name)}</h1>
+      <p class="hero-num">${money(Math.min(a, p.needed))} <span class="muted">of ${money(p.needed)}</span></p>
+      <p class="muted">${dueText(p)}</p>
+    </div>
+    <div class="card soft"><p>${msg}</p></div>
+    <div class="stack">
+      <button class="primary" data-paid="${p.id}">${p.paid ? 'Not paid yet' : 'Mark as paid'}</button>
+      <button data-edit="priority" data-id="${p.id}">Edit</button>
+      ${i > 0 ? `<button data-up="${p.id}">Move up the list</button>` : ''}
+    </div>`;
+}
+
+// ---------- income ----------
+function renderIncome() {
+  return `${backBar()}
+    <div class="title-row"><h1>Income</h1><button class="primary small-btn" data-nav="income-new">Add</button></div>
+    <div class="list">${data.sources.map(s => `<button class="item" data-edit="source" data-id="${s.id}">
+        <span class="item-ico">${icon(incomeIcon(s))}</span>
+        <span class="item-main"><span class="item-name">${esc(s.name)}</span><span class="item-sub">${FREQ[s.freq]} · next ${nice(B.nextPayDate(s, today()))}</span>${s.limit_kind ? `<span class="item-sub">${s.limit_kind === 'food' ? 'Food only' : 'Housing only'}</span>` : ''}</span>
+        <span class="item-right num">${money(s.amount)}</span>
+      </button>`).join('') || '<p>No income added yet.</p>'}</div>`;
+}
+
+// ---------- set aside: this month's money and where it went ----------
+function renderSetAside() {
+  const tot = totals(), pct = tot.needed ? (tot.set / tot.needed) * 100 : 100;
+  const deps = [...data.deposits].sort((a, b) => String(b.deposit_date).localeCompare(String(a.deposit_date)));
+  const pname = id => data.priorities.find(p => p.id === id)?.name || 'a removed priority';
+  return `${backBar()}
+    <div class="hero">
+      <div class="hero-ring">${ring(pct, 120, pct >= 100)}<span class="hero-ico">${icon('jar')}</span></div>
+      <h1>Set aside</h1>
+      <p class="hero-num">${money(tot.set)} <span class="muted">of ${money(tot.needed)}</span></p>
+      <p class="muted">for this month's priorities</p>
+    </div>
+    <h2>Money added this month</h2>
+    <div class="list">${deps.map(d => {
+      const parts = Object.entries(d.alloc).filter(([, v]) => v > 0);
+      return `<details class="item-d"><summary>
+          <span class="item-ico">${icon('wallet')}</span>
+          <span class="item-main"><span class="item-name">${esc(d.label)}</span><span class="item-sub">${nice(B.parseDate(d.deposit_date))}</span></span>
+          <span class="item-right num">${money(d.amount)}</span></summary>
+        <ul class="parts">${parts.map(([id, v]) => `<li><span>${esc(pname(id))}</span><span class="num">${money(v)}</span></li>`).join('') || '<li>Nothing set aside</li>'}</ul>
+        <button class="link" data-deldep="${d.id}">Remove this money</button>
+      </details>`;
+    }).join('') || '<p class="muted">Nothing yet. Tap Add money when you get paid.</p>'}</div>`;
+}
+
+// ---------- available ----------
+function renderAvailable() {
+  const lk = B.leftByKind(data.deposits, data.sources);
+  return `${backBar()}
+    <div class="hero">
+      <div class="hero-badge">${icon('coins')}</div>
+      <h1>Available</h1>
+      <p class="hero-num">${money(lk.any)}</p>
+      <p class="muted">free to spend after your priorities</p>
+    </div>
+    ${lk.food > 0 ? `<div class="card soft row-ico">${icon('cart')}<p>Plus <strong>${money(lk.food)}</strong> of FoodShare, for food only.</p></div>` : ''}
+    ${lk.housing > 0 ? `<div class="card soft row-ico">${icon('house')}<p>Plus <strong>${money(lk.housing)}</strong> of housing assistance, for housing only.</p></div>` : ''}`;
+}
+
+// ---------- coming up: next two weeks of bills and paydays ----------
+function renderUpcoming() {
+  const t = today(), end = B.addDays(t, 14);
+  const bills = data.priorities.filter(p => !p.paid && p.due_date && B.parseDate(p.due_date) <= end)
+    .map(p => ({ date: B.parseDate(p.due_date), html: `<span class="item-ico">${icon(priorityIcon(p))}</span><span class="item-main"><span class="item-name">${esc(p.name)} due</span><span class="item-sub ${isDone(p) ? '' : 'warn'}">${isDone(p) ? 'Ready' : `${money(B.remainingFor(p, data.deposits))} still to set aside`}</span></span>`, id: p.id }));
+  const pays = [];
+  for (const s of data.sources) {
+    let d = B.nextPayDate(s, t), g = 0;
+    while (d <= end && g++ < 10) {
+      pays.push({ date: d, html: `<span class="item-ico pay">${icon(incomeIcon(s))}</span><span class="item-main"><span class="item-name">${esc(s.name)}</span><span class="item-sub">About ${money(s.amount)} coming in</span></span>` });
+      d = s.freq === 'weekly' ? B.addDays(d, 7) : s.freq === 'biweekly' ? B.addDays(d, 14) : B.addMonth(d);
+    }
+  }
+  const all = [...bills, ...pays].sort((a, b) => a.date - b.date);
+  const when = d => { const n = Math.round((d - t) / B.DAY); return n < 0 ? 'Past' : n === 0 ? 'Today' : n === 1 ? 'Tomorrow' : `${weekday(d)} ${nice(d)}`; };
+  return `${backBar()}
+    <h1>Coming up</h1><p class="muted">The next two weeks</p>
+    <div class="list">${all.map(x => `<${x.id ? `button data-nav="priority" data-id="${x.id}"` : 'div'} class="item"><span class="when">${when(x.date)}</span>${x.html}</${x.id ? 'button' : 'div'}>`).join('') || '<p class="muted">Nothing due in the next two weeks.</p>'}</div>`;
+}
+
+// ---------- reminders ----------
+const pushOk = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+const installed = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+const isIOS = () => /iPhone|iPad|iPod/.test(navigator.userAgent);
+let remindState = null; // { on, days } for this phone, once known
+function remindSummary() {
+  if (store.mode === 'demo') return 'Before bills are due';
+  if (!remindState) return 'Before bills are due';
+  return remindState.on ? `On · ${remindState.days} day${remindState.days > 1 ? 's' : ''} before` : 'Off';
+}
+async function readRemindState() {
+  if (store.mode === 'demo' || !pushOk()) return (remindState = { on: false, days: 3 });
+  const reg = await navigator.serviceWorker.ready;
+  const sub = await reg.pushManager.getSubscription();
+  const row = sub ? await store.reminderFor(sub.endpoint).catch(() => null) : null;
+  return (remindState = { on: Boolean(sub && row), days: row?.days_before || 3 });
+}
+function renderReminders() {
+  return `${backBar()}
+    <div class="hero">
+      <div class="hero-badge">${icon('bell')}</div>
+      <h1>Reminders</h1>
+      <p class="muted">A gentle note on this phone when a bill is due soon and still needs money.</p>
+    </div>
+    <div id="rem-body" class="stack"><p class="muted center-text">Checking…</p></div>`;
+}
+async function fillReminders() {
+  const el = $('rem-body');
+  if (!el) return;
+  if (store.mode === 'demo') { el.innerHTML = '<div class="card soft"><p>Reminders work once your household is signed in. This is only example data.</p></div>'; return; }
+  if (isIOS() && !installed()) {
+    el.innerHTML = `<div class="card soft"><p><strong>First, add Steady to your Home Screen.</strong></p><p>iPhones only allow reminders from apps on the Home Screen. In Safari, tap the Share button, then <strong>Add to Home Screen</strong>. Open Steady from there and come back here.</p></div>`;
+    return;
+  }
+  if (!pushOk()) { el.innerHTML = '<div class="card soft"><p>This browser can\'t show reminders. Try Chrome, Edge, or Safari on a phone.</p></div>'; return; }
+  if (Notification.permission === 'denied') { el.innerHTML = '<div class="card soft"><p>Notifications are turned off for Steady in this phone\'s settings. Turn them on there, then come back.</p></div>'; return; }
+  const st = await readRemindState();
+  const opts = [1, 3, 5].map(n => `<button class="seg ${st.days === n ? 'on' : ''}" data-days="${n}" aria-pressed="${st.days === n}">${n} day${n > 1 ? 's' : ''}</button>`).join('');
+  el.innerHTML = `
+    <div class="card"><p class="small muted">Remind me this many days before a due date:</p><div class="segs">${opts}</div>
+      <p class="small muted">You'll also get one the day before, only if the bill still needs money.</p></div>
+    ${st.on ? '<p class="center-text"><strong>Reminders are on for this phone.</strong></p><button id="rem-off">Turn off reminders</button>' : '<button class="primary" id="rem-on">Turn on reminders</button>'}`;
+  document.querySelectorAll('[data-days]').forEach(b => b.onclick = () => act(async () => {
+    remindState.days = Number(b.dataset.days);
+    if (remindState.on) { const sub = await (await navigator.serviceWorker.ready).pushManager.getSubscription(); await store.saveReminder(sub, remindState.days); toast('Saved.'); }
+    fillReminders();
+  }));
+  if ($('rem-on')) $('rem-on').onclick = () => act(async () => {
+    $('rem-on').disabled = true;
+    const perm = await Notification.requestPermission();
+    if (perm !== 'granted') { toast('No problem. You can turn reminders on any time.'); return fillReminders(); }
+    const key = await store.vapidKey();
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription() || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlKey(key) });
+    await store.saveReminder(sub, remindState.days);
+    await store.log('turned on reminders');
+    toast('✓ Reminders are on.', null, true);
+    fillReminders();
+  });
+  if ($('rem-off')) $('rem-off').onclick = () => act(async () => {
+    const sub = await (await navigator.serviceWorker.ready).pushManager.getSubscription();
+    if (sub) { await store.removeReminder(sub.endpoint); await sub.unsubscribe(); }
+    toast('Reminders are off for this phone.');
+    fillReminders();
+  });
+}
+function urlKey(b64) {
+  const pad = '='.repeat((4 - (b64.length % 4)) % 4);
+  const raw = atob((b64 + pad).replace(/-/g, '+').replace(/_/g, '/'));
+  return Uint8Array.from(raw, c => c.charCodeAt(0));
+}
+
+// ---------- household ----------
+function renderHousehold() {
+  return `${backBar()}
+    <div class="hero">
+      <div class="hero-badge">${icon('people')}</div>
+      <h1>${esc(data.household?.name || 'Household')}</h1>
+      <p class="muted">${data.members.map(m => esc(m.display_name)).join(' and ')}</p>
+    </div>
+    ${data.members.length < 2 ? `<div class="card"><h2>Invite your partner</h2><p class="small">They sign in with their own email, tap "Join", and enter:</p><p class="code">${esc(data.household.invite_code)}</p></div>` : ''}
+    ${data.activity.length ? `<details class="card"><summary><h2>Recent changes</h2></summary><ul class="log">${data.activity.slice(0, 8).map(l => `<li><strong>${esc(l.who)}</strong> ${esc(l.what)} <span class="muted">· ${ago(l.created_at)}</span></li>`).join('')}</ul></details>` : ''}
+    <div class="stack">
+      <button id="new-month">Start next month</button>
+      ${store.mode === 'demo' ? '<button id="reset">Reset example data</button>' : '<button id="signout">Sign out</button>'}
+    </div>
+    <p class="small muted center-text">Signed in as ${esc(data.me)}</p>`;
+}
+
+// ---------- add money: one question per screen ----------
 function renderAdd() {
   const d = ui.draft;
+  if (d?.step === 'amount') return renderAmount();
   if (d?.step === 'split') return renderSplit();
-  if (d?.step === 'confirm') return renderConfirm();
-  if (!data.priorities.length) return `<h1>Add money</h1><div class="card"><p>Add a priority first, so there's somewhere for the money to go.</p><button class="primary" data-go="plan">Go to Plan</button></div>`;
-  const opts = data.sources.map(s => `<option value="${s.id}">${esc(s.name)} (usually ${money(s.amount)})</option>`).join('');
-  return `<h1>Add money</h1>
-    <div class="card">
-      <label for="src">Where is it from?<select id="src">${opts}<option value="adhoc">Something else (one-time deposit)</option></select></label>
-      <label for="adhoc-name" id="adhoc-wrap" hidden>What is it?<input id="adhoc-name" placeholder="For example: tax refund, gift"></label>
-      <label for="amt">How much?<input id="amt" inputmode="decimal" class="num"></label>
-      <p class="small muted" id="note"></p>
-      <button class="primary" id="to-split">Show me a suggested split</button>
+  return `${backBar()}
+    <h1>Where's the money from?</h1>
+    <div class="choices">
+      ${data.sources.map(s => `<button class="choice" data-src="${s.id}"><span class="item-ico">${icon(incomeIcon(s))}</span><span class="item-name">${esc(s.name)}</span></button>`).join('')}
+      <button class="choice" data-src="adhoc"><span class="item-ico">${icon('gift')}</span><span class="item-name">Something else</span></button>
     </div>`;
+}
+
+function renderAmount() {
+  const d = ui.draft;
+  return `<button class="back" id="back">${icon('back')}Back</button>
+    <h1>How much${d.source ? ` is ${esc(d.source.name)}` : ''}?</h1>
+    ${d.source ? '' : '<label for="adhoc-name">What is it?<input id="adhoc-name" placeholder="Tax refund, gift…"></label>'}
+    <label class="money-in" for="amt"><span>$</span><input id="amt" inputmode="decimal" class="num" value="${d.amount || ''}" aria-label="Amount in dollars"></label>
+    ${d.limit ? `<p class="muted">This can only go to ${d.limit} priorities.</p>` : ''}
+    <p class="error" id="err" hidden></p>
+    <button class="primary" id="to-split">Next</button>`;
 }
 
 function renderSplit() {
   const d = ui.draft;
   const rows = sorted().filter(p => !p.paid && (!d.limit || p.kind === d.limit) && (B.remainingFor(p, data.deposits) > 0 || d.alloc[p.id] > 0));
   const used = Object.values(d.alloc).reduce((a, b) => a + b, 0), left = d.amount - used;
-  const limitWord = d.limit === 'food' ? 'food' : 'housing';
-  return `<h1>Split ${money(d.amount)}</h1>
-    <p class="muted">${d.limit ? `${esc(d.label)} can only be used for ${limitWord}, so it can only go to ${limitWord} priorities.` : 'Here is a suggestion based on what each priority still needs and when it is due. Change any amount.'}</p>
+  const leftWord = d.limit ? `Left over (${d.limit} only)` : 'Left to spend';
+  return `<button class="back" id="back">${icon('back')}Back</button>
+    <h1>Here's a suggested split</h1>
+    <p class="muted">Change any amount if you like.</p>
     <div class="card">
-      ${rows.length ? rows.map(p => `<div class="split-row"><label for="a-${p.id}" style="font-weight:400">${esc(p.name)}<span class="small muted">${money(B.remainingFor(p, data.deposits))} to go · ${dueText(p)}</span></label><input id="a-${p.id}" data-pid="${p.id}" inputmode="decimal" class="num" value="${d.alloc[p.id] || 0}"></div>`).join('') : `<p>No ${d.limit ? limitWord + ' ' : ''}priorities need money right now.</p>`}
-      <div class="total"><span id="left-label">${left >= 0 ? (d.limit ? `Left over (${limitWord} only)` : 'Left over to spend') : 'Over by'}</span><span class="num" id="left">${money(Math.abs(left))}</span></div>
+      ${rows.length ? rows.map(p => `<div class="split-row"><label for="a-${p.id}"><span class="item-ico sm">${icon(priorityIcon(p))}</span><span>${esc(p.name)}</span></label><input id="a-${p.id}" data-pid="${p.id}" inputmode="decimal" class="num" value="${d.alloc[p.id] || 0}"></div>`).join('') : `<p>No ${d.limit ? d.limit + ' ' : ''}priorities need money right now.</p>`}
+      <div class="total"><span id="left-label">${left >= 0 ? leftWord : 'Over by'}</span><span class="num" id="left">${money(Math.abs(left))}</span></div>
     </div>
-    <div class="btns"><button class="primary" id="to-confirm" ${left < 0 ? 'disabled' : ''}>Next</button><button id="back">Go back</button></div>`;
+    <button class="primary" id="save-split" ${left < 0 ? 'disabled' : ''}>Save</button>`;
 }
 
-function renderConfirm() {
-  const d = ui.draft;
-  const parts = Object.entries(d.alloc).filter(([, v]) => v > 0).map(([id, v]) => `<li>${money(v)} to ${esc(data.priorities.find(p => p.id === id)?.name)}</li>`).join('');
-  const used = Object.values(d.alloc).reduce((a, b) => a + b, 0);
-  return `<h1>Does this look right?</h1>
-    <div class="card"><p>This adds <strong>${money(d.amount)}</strong> from ${esc(d.label)} and sets aside:</p><ul>${parts || '<li>Nothing yet</li>'}</ul><p>${money(d.amount - used)} is left over${d.limit ? ` (${d.limit} only)` : ' to spend'}.</p><p class="small muted">You can undo this right after.</p></div>
-    <div class="btns"><button class="primary" id="save-split">Yes, save it</button><button id="back">Change amounts</button></div>`;
-}
-
-function renderPlan() {
-  if (ui.edit) return renderEdit();
-  if (ui.confirm) return renderConfirmBox();
-  const pr = sorted();
-  return `<h1>Plan</h1>
-    <div class="section-title"><h2>Priorities</h2><button data-edit="priority">Add</button></div>
-    <p class="small muted">In order of importance. Money goes to the top ones first.</p>
-    <div class="list">${pr.map((p, i) => `<div class="row">
-      <div class="row-head"><strong>${i + 1}. ${esc(p.name)}</strong><span class="num">${money(p.needed)}</span></div>
-      <div class="meta"><span>${dueText(p)}</span><span>${KIND[p.kind]}</span></div>
-      <div class="btns">
-        <button data-up="${p.id}" ${i === 0 ? 'disabled' : ''} aria-label="Move ${esc(p.name)} up">Move up</button>
-        <button data-paid="${p.id}">${p.paid ? 'Not paid yet' : 'Mark as paid'}</button>
-        <button data-edit="priority" data-id="${p.id}">Edit</button>
-      </div></div>`).join('') || '<p>No priorities yet.</p>'}</div>
-    <div class="section-title"><h2>Money coming in</h2><button data-edit="source">Add</button></div>
-    <div class="list">${data.sources.map(s => `<div class="row">
-      <div class="row-head"><strong>${esc(s.name)}</strong><span class="num">${money(s.amount)}</span></div>
-      <div class="meta"><span>${FREQ[s.freq]} · next ${nice(B.nextPayDate(s, today()))}</span><span>${s.limit_kind ? LIMIT[s.limit_kind] : esc(s.person)}</span></div>
-      <div class="btns"><button data-edit="source" data-id="${s.id}">Edit</button></div></div>`).join('') || '<p>No income added yet.</p>'}</div>
-    <div class="card"><h2>Household</h2>
-      <p>${data.members.map(m => esc(m.display_name)).join(' and ')}</p>
-      ${data.members.length < 2 ? `<p class="small">To add your partner, have them open the app, sign in with their email, choose "Join", and enter this code:</p><p class="code">${esc(data.household.invite_code)}</p>` : ''}
-      <p class="small muted">You're using the app as ${esc(data.me)}.</p>
-    </div>
-    <div class="card"><h2>Reminders</h2><p class="small">Calm reminders a few days before a due date, when a priority still needs money, are coming in the next update.</p></div>
-    <div class="btns"><button id="new-month">Start next month</button>${store.mode === 'demo' ? '<button id="reset">Reset example data</button>' : '<button id="signout">Sign out</button>'}</div>`;
-}
-
+// ---------- forms (unchanged fields, simpler words) ----------
 function renderEdit() {
   const e = ui.edit;
   if (e.type === 'priority') {
     const p = data.priorities.find(x => x.id === e.id) || { name: '', needed: '', due_date: '', kind: 'other' };
-    return `<h1>${e.id ? 'Edit priority' : 'Add a priority'}</h1><div class="card">
-      <label for="f-name">Name<input id="f-name" value="${esc(p.name)}" placeholder="For example: Internet"></label>
-      <label for="f-needed">Amount needed this month<input id="f-needed" inputmode="decimal" class="num" value="${esc(p.needed)}"></label>
-      <label for="f-due">Due date (leave empty if it's used all month, like groceries)<input id="f-due" type="date" value="${esc(p.due_date || '')}"></label>
-      <label for="f-kind">Kind<select id="f-kind">${Object.entries(KIND).map(([k, v]) => `<option value="${k}" ${p.kind === k ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
-      <p class="small muted">Food and Housing matter for FoodShare and housing assistance money, which can only go to matching priorities.</p>
+    return `<button class="back" id="f-cancel">${icon('back')}Cancel</button>
+      <h1>${e.id ? 'Edit priority' : 'Add a priority'}</h1><div class="card">
+      <label for="f-name">What is it?<input id="f-name" value="${esc(p.name)}" placeholder="Rent, groceries, phone…"></label>
+      <label for="f-needed">How much this month?<input id="f-needed" inputmode="decimal" class="num" value="${esc(p.needed)}"></label>
+      <label for="f-due">Due date <span class="muted small">(skip if it's spent all month)</span><input id="f-due" type="date" value="${esc(p.due_date || '')}"></label>
+      <label for="f-kind">Type<select id="f-kind">${Object.entries(KIND).map(([k, v]) => `<option value="${k}" ${p.kind === k ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
       <p class="error" id="err" hidden></p>
-      <div class="btns"><button class="primary" id="f-save">Save</button><button id="f-cancel">Cancel</button>${e.id ? '<button class="danger" id="f-delete">Delete</button>' : ''}</div></div>`;
+      <button class="primary" id="f-save">Save</button>${e.id ? '<button class="link danger" id="f-delete">Delete this priority</button>' : ''}</div>`;
   }
   const s = data.sources.find(x => x.id === e.id) || { name: '', person: data.me, freq: 'biweekly', amount: '', next_date: '', limit_kind: null };
-  return `<h1>${e.id ? 'Edit income' : 'Add income'}</h1><div class="card">
-    <label for="f-name">Name<input id="f-name" value="${esc(s.name)}" placeholder="For example: Pat's paycheck, FoodShare"></label>
-    <label for="f-person">Whose is it?<select id="f-person">${data.members.map(m => `<option ${m.display_name === s.person ? 'selected' : ''}>${esc(m.display_name)}</option>`).join('')}</select></label>
+  return `<button class="back" id="f-cancel">${icon('back')}Cancel</button>
+    <h1>${e.id ? 'Edit income' : 'Add income'}</h1><div class="card">
+    <label for="f-name">Name<input id="f-name" value="${esc(s.name)}" placeholder="Pat's paycheck, FoodShare…"></label>
+    <label for="f-person">Whose?<select id="f-person">${data.members.map(m => `<option ${m.display_name === s.person ? 'selected' : ''}>${esc(m.display_name)}</option>`).join('')}</select></label>
     <label for="f-freq">How often?<select id="f-freq">${Object.entries(FREQ).map(([k, v]) => `<option value="${k}" ${s.freq === k ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
     <label for="f-amount">Usual amount<input id="f-amount" inputmode="decimal" class="num" value="${esc(s.amount)}"></label>
     <label for="f-next">Next pay date<input id="f-next" type="date" value="${esc(s.next_date)}"></label>
-    <label for="f-limit">Can it be used for anything?<select id="f-limit"><option value="">Yes, anything</option>${Object.entries(LIMIT).map(([k, v]) => `<option value="${k}" ${s.limit_kind === k ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
+    <label for="f-limit">What can it pay for?<select id="f-limit"><option value="">Anything</option>${Object.entries(LIMIT).map(([k, v]) => `<option value="${k}" ${s.limit_kind === k ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
     <p class="error" id="err" hidden></p>
-    <div class="btns"><button class="primary" id="f-save">Save</button><button id="f-cancel">Cancel</button>${e.id ? '<button class="danger" id="f-delete">Delete</button>' : ''}</div></div>`;
+    <button class="primary" id="f-save">Save</button>${e.id ? '<button class="link danger" id="f-delete">Delete this income</button>' : ''}</div>`;
 }
 
 function renderConfirmBox() {
   const c = ui.confirm;
   return `<h1>${esc(c.title)}</h1><div class="card"><p>${esc(c.body)}</p>
-    <div class="btns"><button class="primary" id="c-yes">${esc(c.yes)}</button><button id="c-no">Cancel</button></div></div>`;
+    <div class="stack"><button class="primary" id="c-yes">${esc(c.yes)}</button><button id="c-no">Cancel</button></div></div>`;
 }
 
 // ---------- render + wiring ----------
+const VIEWS = { home: renderHome, priorities: renderPriorities, priority: renderPriority, income: renderIncome, setaside: renderSetAside, available: renderAvailable, household: renderHousehold, upcoming: renderUpcoming, reminders: renderReminders, add: renderAdd };
 function render() {
   $('nav').hidden = false;
-  $('app').innerHTML = ui.tab === 'home' ? renderHome() : ui.tab === 'add' ? renderAdd() : renderPlan();
-  document.querySelectorAll('#nav button').forEach(b => b.setAttribute('aria-current', b.dataset.tab === ui.tab ? 'page' : 'false'));
+  $('app').innerHTML = ui.confirm ? renderConfirmBox() : ui.edit ? renderEdit() : (VIEWS[ui.view] || renderHome)();
+  document.querySelectorAll('#nav button').forEach(b => b.setAttribute('aria-current', b.dataset.tab === (ui.view === 'add' ? 'add' : 'home') && !ui.edit ? 'page' : 'false'));
   wire();
 }
-function go(tab) {
-  ui.tab = tab; ui.draft = null; ui.edit = null; ui.confirm = null;
+function go(view, id = null) {
+  if (view === 'priority-new') { ui.edit = { type: 'priority', id: null, back: ui.view }; render(); return window.scrollTo(0, 0); }
+  if (view === 'income-new') { ui.edit = { type: 'source', id: null, back: ui.view }; render(); return window.scrollTo(0, 0); }
+  ui.view = view; ui.id = id; ui.draft = null; ui.edit = null; ui.confirm = null;
   render(); window.scrollTo(0, 0);
 }
 
 function wire() {
-  document.querySelectorAll('[data-go]').forEach(b => b.onclick = () => go(b.dataset.go));
+  if (ui.view === 'reminders' && !ui.edit && !ui.confirm) fillReminders().catch(e => toast(friendlyError(e)));
+  document.querySelectorAll('[data-nav]').forEach(b => b.onclick = () => go(b.dataset.nav, b.dataset.id || null));
 
-  // Add money: step 1
-  if ($('src')) {
-    const upd = () => {
-      const s = data.sources.find(x => x.id === $('src').value);
-      $('adhoc-wrap').hidden = !!s;
-      $('amt').value = s ? s.amount : '';
-      $('note').textContent = s?.limit_kind ? `${s.name} can only be used for ${s.limit_kind}.` : '';
-    };
-    $('src').onchange = upd; upd();
-    $('to-split').onclick = () => {
-      const s = data.sources.find(x => x.id === $('src').value), amount = parseFloat($('amt').value);
-      if (!(amount > 0)) { $('note').textContent = 'Enter an amount above $0 to continue.'; return; }
-      const label = s ? s.name : ($('adhoc-name').value.trim() || 'a one-time deposit');
-      ui.draft = { step: 'split', source: s || null, label, amount, limit: s?.limit_kind || null, alloc: B.suggestSplit(amount, s?.limit_kind || null, ctx(), today()) };
-      render();
-    };
-  }
-  // Add money: step 2
+  // Add money: pick a source
+  document.querySelectorAll('[data-src]').forEach(b => b.onclick = () => {
+    const s = data.sources.find(x => x.id === b.dataset.src) || null;
+    ui.draft = { step: 'amount', source: s, label: s?.name || '', amount: s ? Number(s.amount) : 0, limit: s?.limit_kind || null, alloc: {} };
+    render();
+  });
+  if ($('back')) $('back').onclick = () => { ui.draft.step = ui.draft.step === 'split' ? 'amount' : null; if (!ui.draft.step) ui.draft = null; render(); };
+  if ($('to-split')) $('to-split').onclick = () => {
+    const amount = parseFloat($('amt').value), d = ui.draft;
+    if (!(amount > 0)) { $('err').textContent = 'Enter an amount above $0.'; $('err').hidden = false; return; }
+    if (!d.source) d.label = $('adhoc-name').value.trim() || 'One-time money';
+    Object.assign(d, { step: 'split', amount, alloc: B.suggestSplit(amount, d.limit, ctx(), today()) });
+    render();
+  };
   document.querySelectorAll('[data-pid]').forEach(inp => inp.oninput = () => {
     ui.draft.alloc[inp.dataset.pid] = Math.max(0, parseFloat(inp.value) || 0);
     const left = ui.draft.amount - Object.values(ui.draft.alloc).reduce((a, b) => a + b, 0);
     $('left').textContent = money(Math.abs(left));
-    $('left-label').textContent = left >= 0 ? (ui.draft.limit ? `Left over (${ui.draft.limit} only)` : 'Left over to spend') : 'Over by';
-    $('to-confirm').disabled = left < 0;
+    $('left-label').textContent = left >= 0 ? (ui.draft.limit ? `Left over (${ui.draft.limit} only)` : 'Left to spend') : 'Over by';
+    $('save-split').disabled = left < 0;
   });
-  if ($('to-confirm')) $('to-confirm').onclick = () => { ui.draft.step = 'confirm'; render(); };
-  if ($('back')) $('back').onclick = () => { ui.draft.step = ui.draft.step === 'confirm' ? 'split' : null; if (!ui.draft.step) ui.draft = null; render(); };
-  // Add money: step 3
   if ($('save-split')) $('save-split').onclick = () => act(async () => {
     $('save-split').disabled = true;
     const d = ui.draft, t = today();
     const before = new Set(data.priorities.filter(p => B.remainingFor(p, data.deposits) <= 0).map(p => p.id));
     const alloc = Object.fromEntries(Object.entries(d.alloc).filter(([, v]) => v > 0));
     const depId = await store.addDeposit({ source_id: d.source?.id || null, label: d.label, amount: d.amount, deposit_date: B.iso(t) }, alloc);
-    // Move the source's next pay date past today.
     let oldSource = null;
     if (d.source) {
       const nextDate = B.iso(B.nextPayDate(d.source, B.addDays(t, 1)));
@@ -351,8 +529,8 @@ function wire() {
         await store.save('income_sources', { ...oldSource, next_date: nextDate });
       }
     }
-    await store.log(`added ${d.label} (${money(d.amount)}) and split it`);
-    ui.draft = null; ui.tab = 'home';
+    await store.log(`added ${d.label} (${money(d.amount)})`);
+    ui.draft = null; ui.view = 'home';
     await refresh(); window.scrollTo(0, 0);
     const done = data.priorities.filter(p => !p.paid && B.remainingFor(p, data.deposits) <= 0 && !before.has(p.id));
     const undo = async () => {
@@ -360,31 +538,42 @@ function wire() {
       if (oldSource) await store.save('income_sources', oldSource);
       await store.log(`undid adding ${d.label}`);
     };
-    if (done.length) toast(done.length > 2 ? `✓ ${done.length} priorities are now fully set aside. Nice work.` : `✓ ${done.map(p => p.name).join(' and ')} ${done.length > 1 ? 'are' : 'is'} fully set aside. Nice work.`, undo, true);
-    else toast('Saved. Your priorities are updated.', undo);
+    if (done.length) toast(done.length > 2 ? `✓ ${done.length} priorities are now ready. Nice work.` : `✓ ${done.map(p => p.name).join(' and ')} ${done.length > 1 ? 'are' : 'is'} ready. Nice work.`, undo, true);
+    else toast('Saved.', undo);
   });
 
-  // Plan: priorities
+  // Priority screen actions
   document.querySelectorAll('[data-up]').forEach(b => b.onclick = () => act(async () => {
     const pr = sorted(), i = pr.findIndex(p => p.id === b.dataset.up);
     const a = pick(pr[i - 1], P_COLS), c = pick(pr[i], P_COLS);
-    // Renumber so the swap is clean even if two priorities share a number.
-    const swap = async (x, y) => { await store.save('priorities', { ...x, sort_order: i }); await store.save('priorities', { ...y, sort_order: i - 1 }); };
-    await swap(a, c);
+    await store.save('priorities', { ...a, sort_order: i });
+    await store.save('priorities', { ...c, sort_order: i - 1 });
     await store.log(`moved ${c.name} up`);
     await refresh();
-    toast('Order changed.', async () => { await store.save('priorities', a); await store.save('priorities', c); });
+    toast(`${c.name} moved up.`, async () => { await store.save('priorities', a); await store.save('priorities', c); });
   }));
   document.querySelectorAll('[data-paid]').forEach(b => b.onclick = () => act(async () => {
     const p = pick(data.priorities.find(x => x.id === b.dataset.paid), P_COLS);
     await store.save('priorities', { ...p, paid: !p.paid });
     await store.log(p.paid ? `marked ${p.name} as not paid` : `marked ${p.name} as paid`);
     await refresh();
-    toast(p.paid ? `${p.name} is back on the list.` : `✓ ${p.name} is paid. One less thing to think about.`, () => store.save('priorities', p), !p.paid);
+    toast(p.paid ? `${p.name} is back on the list.` : `✓ ${p.name} is paid.`, () => store.save('priorities', p), !p.paid);
   }));
   document.querySelectorAll('[data-edit]').forEach(b => b.onclick = () => { ui.edit = { type: b.dataset.edit, id: b.dataset.id || null }; render(); window.scrollTo(0, 0); });
 
-  // Plan: edit forms
+  // Set aside: remove a deposit
+  document.querySelectorAll('[data-deldep]').forEach(b => b.onclick = () => {
+    const dep = data.deposits.find(d => d.id === b.dataset.deldep);
+    ui.confirm = {
+      title: `Remove ${dep.label}?`,
+      body: `This takes ${money(dep.amount)} out of this month, along with what it set aside. This can't be undone.`,
+      yes: 'Remove it',
+      run: async () => { await store.deleteDeposit(dep.id); await store.log(`removed ${dep.label} (${money(dep.amount)})`); toast(`${dep.label} removed.`); },
+    };
+    render();
+  });
+
+  // Forms
   if ($('f-save')) {
     const err = m => { $('err').textContent = m; $('err').hidden = false; };
     $('f-cancel').onclick = () => { ui.edit = null; render(); };
@@ -396,8 +585,9 @@ function wire() {
         const old = data.priorities.find(x => x.id === e.id);
         const row = { ...(old ? pick(old, P_COLS) : { paid: false, sort_order: data.priorities.length }), name, needed, due_date: $('f-due').value || null, kind: $('f-kind').value };
         const id = await store.save('priorities', row);
-        await store.log(old ? `changed the priority ${name}` : `added the priority ${name}`);
-        ui.edit = null; await refresh();
+        await store.log(old ? `changed ${name}` : `added ${name}`);
+        ui.edit = null; if (ui.view === 'home' && !old) ui.view = data.sources.length ? 'priorities' : 'home';
+        await refresh();
         toast(old ? `${name} saved.` : `${name} added.`, old ? () => store.save('priorities', pick(old, P_COLS)) : () => store.remove('priorities', id));
       } else {
         const amount = parseFloat($('f-amount').value), next_date = $('f-next').value;
@@ -405,7 +595,7 @@ function wire() {
         const old = data.sources.find(x => x.id === e.id);
         const row = { ...(old ? pick(old, S_COLS) : {}), name, person: $('f-person').value, freq: $('f-freq').value, amount, next_date, limit_kind: $('f-limit').value || null };
         const id = await store.save('income_sources', row);
-        await store.log(old ? `changed the income ${name}` : `added the income ${name}`);
+        await store.log(old ? `changed ${name}` : `added ${name}`);
         ui.edit = null; await refresh();
         toast(`${name} saved.`, old ? () => store.save('income_sources', pick(old, S_COLS)) : () => store.remove('income_sources', id));
       }
@@ -414,9 +604,14 @@ function wire() {
       const e = ui.edit, item = (e.type === 'priority' ? data.priorities : data.sources).find(x => x.id === e.id);
       ui.confirm = {
         title: `Delete ${item.name}?`,
-        body: e.type === 'priority' ? `Any money set aside for ${item.name} this month goes back to "left over to spend". This can't be undone.` : `Past deposits stay, but ${item.name} won't be suggested anymore. This can't be undone.`,
+        body: e.type === 'priority' ? `Money set aside for ${item.name} goes back to Available. This can't be undone.` : `Money already added stays. ${item.name} just won't be listed anymore. This can't be undone.`,
         yes: 'Delete',
-        run: async () => { await store.remove(e.type === 'priority' ? 'priorities' : 'income_sources', item.id); await store.log(`deleted ${item.name}`); toast(`${item.name} deleted.`); },
+        run: async () => {
+          await store.remove(e.type === 'priority' ? 'priorities' : 'income_sources', item.id);
+          await store.log(`deleted ${item.name}`);
+          if (ui.view === 'priority') ui.view = 'priorities';
+          toast(`${item.name} deleted.`);
+        },
       };
       ui.edit = null; render();
     };
@@ -428,13 +623,13 @@ function wire() {
   if ($('new-month')) $('new-month').onclick = () => {
     ui.confirm = {
       title: 'Start next month?',
-      body: 'This clears this month\'s money, un-marks paid bills, and moves each due date ahead one month. Your priorities and income stay. This can\'t be undone.',
+      body: 'This clears this month\'s money, un-marks paid bills, and moves due dates ahead one month. Your priorities and income stay. This can\'t be undone.',
       yes: 'Start next month',
-      run: async () => { await store.startNewMonth(); await store.log('started a new month'); ui.tab = 'home'; toast('New month started. Same priorities, nothing set aside yet.'); },
+      run: async () => { await store.startNewMonth(); await store.log('started a new month'); ui.view = 'home'; toast('New month started.'); },
     };
     render();
   };
-  if ($('reset')) $('reset').onclick = () => act(async () => { store.resetDemo(); await refresh(); toast('Example data reset.'); });
+  if ($('reset')) $('reset').onclick = () => act(async () => { store.resetDemo(); ui.view = 'home'; await refresh(); toast('Example data reset.'); });
   if ($('signout')) $('signout').onclick = () => act(async () => { await store.signOut(); route(); });
 }
 
@@ -446,6 +641,7 @@ async function route() {
     const hid = await store.findHousehold();
     if (!hid) return renderSetup();
     await refresh();
+    if (store.mode === 'live') readRemindState().then(() => { if (ui.view === 'home' && !ui.edit && !ui.draft) render(); }).catch(() => {});
   } catch (e) {
     console.error(e);
     $('app').innerHTML = `<div class="card"><h1>Couldn't load your budget</h1><p>${esc(friendlyError(e))}</p><button class="primary" id="retry">Try again</button></div>`;
