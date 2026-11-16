@@ -18,9 +18,9 @@ Open `index.html` through any web server (for example `python3 -m http.server`).
 3. Open **Authentication → URL Configuration**. Set **Site URL** to the address where the app is hosted (for example `https://<your-github-name>.github.io/budgeting-app/`) and add the same address under **Redirect URLs**.
 4. Open **Authentication → Email Templates → Magic Link** and add this line to the message, so people can type a code if the link opens in the wrong browser:
    `Or enter this code in the app: {{ .Token }}`
-5. Open **Project Settings → API**. Copy the **Project URL** and the **anon public** key into `config.js`. Never put the `service_role` key in this app.
+5. Open **Project Settings → API**. Copy the **Project URL** and the **publishable** key (older projects call it **anon public**) into `config.js`. Never put the secret or `service_role` key in this app.
 
-The anon key is meant to be public. Row-level security in `schema.sql` makes sure each person can only reach their own household's data.
+The publishable key is meant to be public. Row-level security in `schema.sql` makes sure each person can only reach their own household's data.
 
 ## Host it (GitHub Pages)
 
